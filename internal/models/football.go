@@ -12,13 +12,14 @@ type League struct {
 }
 
 type Team struct {
-	ID    string // NEW: The bulletproof identifier
+	ID    string 
 	Name  string
 	Score int   
 }
 
 type Match struct {
 	ID     string       
+	Date   string       // NEW: To hold the formatted date
 	Home   Team         
 	Away   Team         
 	Status Status       
@@ -37,7 +38,7 @@ type Status struct {
 type MatchEvent struct {
 	Time       string
 	PlayerName string
-	TeamID     string // NEW: To accurately sort into the correct bucket
+	TeamID     string 
 	TeamName   string
 	Type       string
 }

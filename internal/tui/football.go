@@ -14,26 +14,23 @@ import (
 
 // --- STYLES ---
 var (
-	// Define our team colors (Cyan for Home, Pink for Away)
-	homeColor = lipgloss.Color("86")  // Aqua/Cyan
-	awayColor = lipgloss.Color("212") // Pink
+	homeColor = lipgloss.Color("86")  
+	awayColor = lipgloss.Color("212") 
 
-	// Text styles
 	homeStyle = lipgloss.NewStyle().Foreground(homeColor).Bold(true)
 	awayStyle = lipgloss.NewStyle().Foreground(awayColor).Bold(true)
 	
-	// Scoreboard style (Dark grey background, white text)
 	scoreStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("236")).
 			Foreground(lipgloss.Color("255")).
 			Bold(true).
 			Padding(0, 1)
 
-	// Box styles for the side-by-side event columns
+	// Increased width slightly to accommodate grouped times
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1).
-			Width(35) // Fixed width so the columns look even
+			Width(42) 
 )
 
 type dataMsg []models.League
@@ -59,8 +56,7 @@ func NewFootballModel() FootballModel {
 }
 
 func fetchFootballData() tea.Msg {
-	today := time.Now().Format("20060102")
-	leagues, err := api.FetchFootballMatches(today)
+	leagues, err := api.FetchFootballMatches("") // Date logic is handled in the API
 	if err != nil { return errMsg(err) }
 	return dataMsg(leagues)
 }
@@ -89,21 +85,10 @@ func (m FootballModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		
 		case "up", "k":
-			if m.selectedLeague == nil && m.leagueCursor > 0 {
-				m.leagueCursor--
-			} else if m.selectedLeague != nil && m.selectedMatch == nil && m.matchCursor > 0 {
-				m.matchCursor--
-			}
-			
+			if m.selectedLeague == nil && m.leagueCursor > 0 { m.leagueCursor-- } else if m.selectedLeague != nil && m.selectedMatch == nil && m.matchCursor > 0 { m.matchCursor-- }
 		case "down", "j":
-			if m.selectedLeague == nil && m.leagueCursor < len(m.leagues)-1 {
-				m.leagueCursor++
-			} else if m.selectedLeague != nil && m.selectedMatch == nil && m.matchCursor < len(m.selectedLeague.Matches)-1 {
-				m.matchCursor++
-			}
-			
+			if m.selectedLeague == nil && m.leagueCursor < len(m.leagues)-1 { m.leagueCursor++ } else if m.selectedLeague != nil && m.selectedMatch == nil && m.matchCursor < len(m.selectedLeague.Matches)-1 { m.matchCursor++ }
 		case "enter":
 			if m.selectedLeague == nil && len(m.leagues) > 0 {
 				m.selectedLeague = &m.leagues[m.leagueCursor]
@@ -113,13 +98,8 @@ func (m FootballModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isFetchingDetails = true
 				return m, fetchMatchDetailsCmd(m.selectedLeague.Code, m.selectedMatch.ID)
 			}
-			
 		case "b", "esc":
-			if m.selectedMatch != nil {
-				m.selectedMatch = nil 
-			} else if m.selectedLeague != nil {
-				m.selectedLeague = nil
-			}
+			if m.selectedMatch != nil { m.selectedMatch = nil } else if m.selectedLeague != nil { m.selectedLeague = nil }
 		}
 
 	case dataMsg:
@@ -159,9 +139,7 @@ func (m FootballModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		var cmds []tea.Cmd
 		cmds = append(cmds, fetchFootballData)
-		if m.selectedMatch != nil {
-			cmds = append(cmds, fetchMatchDetailsCmd(m.selectedLeague.Code, m.selectedMatch.ID))
-		}
+		if m.selectedMatch != nil { cmds = append(cmds, fetchMatchDetailsCmd(m.selectedLeague.Code, m.selectedMatch.ID)) }
 		cmds = append(cmds, tickCmd())
 		return m, tea.Batch(cmds...)
 	}
@@ -181,40 +159,69 @@ func (m FootballModel) View() string {
 		awayName := m.selectedMatch.Away.Name
 		scoreTxt := fmt.Sprintf(" %d - %d ", m.selectedMatch.Home.Score, m.selectedMatch.Away.Score)
 
-		// 1. Render the top scoreboard banner
-		header := fmt.Sprintf("🏟️  %s %s %s\n", 
-			homeStyle.Render(homeName), 
-			scoreStyle.Render(scoreTxt), 
-			awayStyle.Render(awayName),
-		)
+		header := fmt.Sprintf("🏟️  %s %s %s\n", homeStyle.Render(homeName), scoreStyle.Render(scoreTxt), awayStyle.Render(awayName))
 		b.WriteString(header)
-		b.WriteString(fmt.Sprintf("   Status: %s\n\n", m.selectedMatch.Status.Reason.Short))
+		
+		// NEW: Print the Date alongside the Status
+		b.WriteString(fmt.Sprintf("   📅 %s  |  Status: %s\n\n", m.selectedMatch.Date, m.selectedMatch.Status.Reason.Short))
 
-		// 2. Render the events
 		if m.isFetchingDetails {
 			b.WriteString("   ⏳ Loading match events...\n")
 		} else if len(m.selectedMatch.Events) == 0 {
+// ... rest of the code remains exactly the same ...
 			b.WriteString("   No major events yet (or data unavailable).\n")
 		} else {
+			
+			// --- 1. GROUP EVENTS BY PLAYER ---
+			type groupedEvent struct {
+				TeamID     string
+				TeamName   string
+				PlayerName string
+				Type       string
+				Times      []string
+			}
+			var grouped []groupedEvent
+
+			for _, event := range m.selectedMatch.Events {
+				found := false
+				for i, ge := range grouped {
+					// If the same player does the same action, group it!
+					if ge.PlayerName == event.PlayerName && ge.Type == event.Type && ge.TeamID == event.TeamID {
+						grouped[i].Times = append(grouped[i].Times, event.Time)
+						found = true
+						break
+					}
+				}
+				if !found {
+					grouped = append(grouped, groupedEvent{
+						TeamID:     event.TeamID,
+						TeamName:   event.TeamName,
+						PlayerName: event.PlayerName,
+						Type:       event.Type,
+						Times:      []string{event.Time},
+					})
+				}
+			}
+
+			// --- 2. BUILD THE COLUMNS ---
 			var homeEvents, awayEvents strings.Builder
 
-			// Sort events into Home and Away buckets using Team ID!
-			for _, event := range m.selectedMatch.Events {
+			for _, ge := range grouped {
 				icon := "⚽"
-				if event.Type == "Yellow Card" { icon = "🟨" }
-				if event.Type == "Red Card" { icon = "🟥" }
-				if event.Type == "Own Goal" { icon = "🤦" }
+				if ge.Type == "Yellow Card" { icon = "🟨" }
+				if ge.Type == "Red Card" { icon = "🟥" }
+				if ge.Type == "Own Goal" { icon = "🤦" }
 
-				eventLine := fmt.Sprintf("%s [%s'] %s\n", icon, event.Time, event.PlayerName)
+				// Format multiple times: e.g., "14', 56'"
+				timeStr := strings.Join(ge.Times, "', ") + "'"
+				eventLine := fmt.Sprintf("%s %s [%s]\n", icon, ge.PlayerName, timeStr)
 
-				// Use exact Team ID matching
-				if event.TeamID == m.selectedMatch.Home.ID {
+				if ge.TeamID == m.selectedMatch.Home.ID {
 					homeEvents.WriteString(eventLine)
-				} else if event.TeamID == m.selectedMatch.Away.ID {
+				} else if ge.TeamID == m.selectedMatch.Away.ID {
 					awayEvents.WriteString(eventLine)
 				} else {
-					// Fallback just in case ID is missing from API
-					if strings.Contains(strings.ToLower(m.selectedMatch.Home.Name), strings.ToLower(event.TeamName)) {
+					if strings.Contains(strings.ToLower(m.selectedMatch.Home.Name), strings.ToLower(ge.TeamName)) {
 						homeEvents.WriteString(eventLine)
 					} else {
 						awayEvents.WriteString(eventLine)
@@ -222,15 +229,20 @@ func (m FootballModel) View() string {
 				}
 			}
 
-			// Render the colored boxes for each team
-			homeBox := boxStyle.Copy().BorderForeground(homeColor).Render(
-				homeStyle.Render(homeName+" Events") + "\n\n" + homeEvents.String(),
-			)
-			awayBox := boxStyle.Copy().BorderForeground(awayColor).Render(
-				awayStyle.Render(awayName+" Events") + "\n\n" + awayEvents.String(),
-			)
+			// --- 3. FORCE PERFECT SYMMETRY ---
+			homeContent := homeStyle.Render(homeName+" Events") + "\n\n" + homeEvents.String()
+			awayContent := awayStyle.Render(awayName+" Events") + "\n\n" + awayEvents.String()
+			
+			// Calculate the max number of lines between the two columns
+			hLines := strings.Count(homeContent, "\n")
+			aLines := strings.Count(awayContent, "\n")
+			maxH := hLines
+			if aLines > maxH { maxH = aLines }
 
-			// Join them side-by-side
+			// Render both boxes with the exact same height
+			homeBox := boxStyle.Copy().BorderForeground(homeColor).Height(maxH).Render(homeContent)
+			awayBox := boxStyle.Copy().BorderForeground(awayColor).Height(maxH).Render(awayContent)
+
 			dashboard := lipgloss.JoinHorizontal(lipgloss.Top, homeBox, "   ", awayBox)
 			b.WriteString(dashboard + "\n")
 		}
@@ -247,9 +259,7 @@ func (m FootballModel) View() string {
 			for i, match := range m.selectedLeague.Matches {
 				cursor := "  "
 				if m.matchCursor == i { cursor = ">>" } 
-				
-				b.WriteString(fmt.Sprintf("%s %s %d - %d %s (%s)\n", 
-					cursor, match.Home.Name, match.Home.Score, match.Away.Score, match.Away.Name, match.Status.Reason.Short))
+				b.WriteString(fmt.Sprintf("%s %s %d - %d %s (%s)\n", cursor, match.Home.Name, match.Home.Score, match.Away.Score, match.Away.Name, match.Status.Reason.Short))
 			}
 		}
 		b.WriteString("\n[Use Up/Down to move, Enter to view details, 'b' to go back]\n")
