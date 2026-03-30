@@ -9,12 +9,37 @@ import (
 	"github.com/aadithyaa9/green-turf/internal/api"
 	"github.com/aadithyaa9/green-turf/internal/models"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// --- STYLES ---
+var (
+	// Define our team colors (Cyan for Home, Pink for Away)
+	homeColor = lipgloss.Color("86")  // Aqua/Cyan
+	awayColor = lipgloss.Color("212") // Pink
+
+	// Text styles
+	homeStyle = lipgloss.NewStyle().Foreground(homeColor).Bold(true)
+	awayStyle = lipgloss.NewStyle().Foreground(awayColor).Bold(true)
+	
+	// Scoreboard style (Dark grey background, white text)
+	scoreStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("255")).
+			Bold(true).
+			Padding(0, 1)
+
+	// Box styles for the side-by-side event columns
+	boxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Padding(0, 1).
+			Width(35) // Fixed width so the columns look even
 )
 
 type dataMsg []models.League
 type detailsMsg []models.MatchEvent
 type errMsg error
-type tickMsg time.Time // NEW: The alarm clock message
+type tickMsg time.Time
 
 type FootballModel struct {
 	leagues           []models.League
@@ -34,7 +59,6 @@ func NewFootballModel() FootballModel {
 }
 
 func fetchFootballData() tea.Msg {
-	// We use the same wide date range here to match the API
 	today := time.Now().Format("20060102")
 	leagues, err := api.FetchFootballMatches(today)
 	if err != nil { return errMsg(err) }
@@ -49,14 +73,12 @@ func fetchMatchDetailsCmd(leagueCode, matchID string) tea.Cmd {
 	}
 }
 
-// NEW: The background timer (fires every 60 seconds)
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second*60, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
 
-// UPDATE: Start both the initial fetch AND the timer simultaneously
 func (m FootballModel) Init() tea.Cmd {
 	return tea.Batch(fetchFootballData, tickCmd())
 }
@@ -103,20 +125,13 @@ func (m FootballModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dataMsg:
 		m.leagues = msg
 		m.isLoading = false
-		
-		// THE POINTER RE-BINDING LOGIC:
-		// If new data arrives while the user is deep in a menu, we must update 
-		// their pointers to point at the fresh data, otherwise the UI breaks!
 		if m.selectedLeague != nil {
 			for i := range m.leagues {
 				if m.leagues[i].Code == m.selectedLeague.Code {
 					m.selectedLeague = &m.leagues[i]
-					
-					// Re-bind the selected match if they are viewing details
 					if m.selectedMatch != nil {
 						for j := range m.selectedLeague.Matches {
 							if m.selectedLeague.Matches[j].ID == m.selectedMatch.ID {
-								// Preserve the events we already fetched
 								savedEvents := m.selectedMatch.Events
 								m.selectedMatch = &m.selectedLeague.Matches[j]
 								m.selectedMatch.Events = savedEvents
@@ -141,21 +156,13 @@ func (m FootballModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isFetchingDetails = false
 		return m, nil
 
-	// NEW: When the 60-second alarm rings
 	case tickMsg:
 		var cmds []tea.Cmd
-		
-		// 1. Fetch the main scoreboard again
 		cmds = append(cmds, fetchFootballData)
-		
-		// 2. If they are actively watching a match, fetch the latest goals for it too!
 		if m.selectedMatch != nil {
 			cmds = append(cmds, fetchMatchDetailsCmd(m.selectedLeague.Code, m.selectedMatch.ID))
 		}
-		
-		// 3. Reset the alarm clock for the next 60 seconds
 		cmds = append(cmds, tickCmd())
-		
 		return m, tea.Batch(cmds...)
 	}
 	
@@ -168,29 +175,64 @@ func (m FootballModel) View() string {
 
 	var b strings.Builder
 
-	// LEVEL 3
+	// LEVEL 3: The Beautiful Match Dashboard
 	if m.selectedMatch != nil {
-		b.WriteString(fmt.Sprintf("🏟️  %s %d - %d %s\n", 
-			m.selectedMatch.Home.Name, m.selectedMatch.Home.Score, 
-			m.selectedMatch.Away.Score, m.selectedMatch.Away.Name))
-		b.WriteString(fmt.Sprintf("Status: %s\n\n", m.selectedMatch.Status.Reason.Short))
+		homeName := m.selectedMatch.Home.Name
+		awayName := m.selectedMatch.Away.Name
+		scoreTxt := fmt.Sprintf(" %d - %d ", m.selectedMatch.Home.Score, m.selectedMatch.Away.Score)
 
+		// 1. Render the top scoreboard banner
+		header := fmt.Sprintf("🏟️  %s %s %s\n", 
+			homeStyle.Render(homeName), 
+			scoreStyle.Render(scoreTxt), 
+			awayStyle.Render(awayName),
+		)
+		b.WriteString(header)
+		b.WriteString(fmt.Sprintf("   Status: %s\n\n", m.selectedMatch.Status.Reason.Short))
+
+		// 2. Render the events
 		if m.isFetchingDetails {
-			b.WriteString("⏳ Loading match events...\n")
+			b.WriteString("   ⏳ Loading match events...\n")
+		} else if len(m.selectedMatch.Events) == 0 {
+			b.WriteString("   No major events yet (or data unavailable).\n")
 		} else {
-			if len(m.selectedMatch.Events) == 0 {
-				b.WriteString("No major events yet (or data unavailable).\n")
-			} else {
-				b.WriteString("⏱️  Match Events:\n")
-				for _, event := range m.selectedMatch.Events {
-					icon := "⚽"
-					if event.Type == "Yellow Card" { icon = "🟨" }
-					if event.Type == "Red Card" { icon = "🟥" }
-					if event.Type == "Own Goal" { icon = "🤦" }
+			var homeEvents, awayEvents strings.Builder
 
-					b.WriteString(fmt.Sprintf("  %s [%s'] %s (%s)\n", icon, event.Time, event.PlayerName, event.TeamName))
+			// Sort events into Home and Away buckets using Team ID!
+			for _, event := range m.selectedMatch.Events {
+				icon := "⚽"
+				if event.Type == "Yellow Card" { icon = "🟨" }
+				if event.Type == "Red Card" { icon = "🟥" }
+				if event.Type == "Own Goal" { icon = "🤦" }
+
+				eventLine := fmt.Sprintf("%s [%s'] %s\n", icon, event.Time, event.PlayerName)
+
+				// Use exact Team ID matching
+				if event.TeamID == m.selectedMatch.Home.ID {
+					homeEvents.WriteString(eventLine)
+				} else if event.TeamID == m.selectedMatch.Away.ID {
+					awayEvents.WriteString(eventLine)
+				} else {
+					// Fallback just in case ID is missing from API
+					if strings.Contains(strings.ToLower(m.selectedMatch.Home.Name), strings.ToLower(event.TeamName)) {
+						homeEvents.WriteString(eventLine)
+					} else {
+						awayEvents.WriteString(eventLine)
+					}
 				}
 			}
+
+			// Render the colored boxes for each team
+			homeBox := boxStyle.Copy().BorderForeground(homeColor).Render(
+				homeStyle.Render(homeName+" Events") + "\n\n" + homeEvents.String(),
+			)
+			awayBox := boxStyle.Copy().BorderForeground(awayColor).Render(
+				awayStyle.Render(awayName+" Events") + "\n\n" + awayEvents.String(),
+			)
+
+			// Join them side-by-side
+			dashboard := lipgloss.JoinHorizontal(lipgloss.Top, homeBox, "   ", awayBox)
+			b.WriteString(dashboard + "\n")
 		}
 		b.WriteString("\n[Press 'b' to go back, 'q' to quit]\n")
 		return b.String()
@@ -198,7 +240,7 @@ func (m FootballModel) View() string {
 
 	// LEVEL 2
 	if m.selectedLeague != nil {
-		b.WriteString(fmt.Sprintf("🏆 %s\n\n", m.selectedLeague.Name))
+		b.WriteString(fmt.Sprintf("🏆 %s\n\n", lipgloss.NewStyle().Bold(true).Render(m.selectedLeague.Name)))
 		if len(m.selectedLeague.Matches) == 0 {
 			b.WriteString("No matches found.\n")
 		} else {
